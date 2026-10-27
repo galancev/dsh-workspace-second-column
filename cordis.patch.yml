@@ -1,0 +1,6 @@
+# Bundle-слой профиля DSH: вставляет плагин в композицию web-профиля.
+# Клиентская половина подключается автоматически из поля `dsh.client`
+# в package.json и раздаётся как /plugins/dsh-workspace-second-column/client.js.
+- insert:
+    - id: workspace-second-column
+      name: dsh-workspace-second-column

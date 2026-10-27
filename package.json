@@ -1,0 +1,43 @@
+{
+  "name": "dsh-workspace-second-column",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH GUI plugin: two visual columns inside the left sidebar (icon rail + New Session/Workspaces) with collapsible navigation labels",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "engines": {
+      "dsh": ">=0.2.1-rc.3"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "scripts": {
+    "check": "node --check lib/index.js && node --check lib/client.js",
+    "verify": "node tools/harness.mjs --plugin dsh-workspace-second-column --plugin-spec link:. --profile verify-second-column --port 52011"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.3.1"
+  },
+  "license": "MIT"
+}
