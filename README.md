@@ -45,12 +45,36 @@ dsh plugin --profile desktop add link:C:\Users\galan\Projects\dsh-workspace-seco
 
 1. ставит на `<html>` атрибуты `data-dsh-wsc` и `data-dsh-wsc-labels`;
 2. добавляет CSS, который превращает корень сайдбара в `display: grid` с двумя
-   колонками (селекторы опираются на суффиксы CSS-module-классов:
-   `_root`, `_panelList`, `_regionArea`, `_footArea` и т. п.);
+   колонками, а внутреннюю обёртку прокрутки — в такой же двухколоночный грид
+   (селекторы опираются на суффиксы CSS-module-классов: `_root`, `_scrollRegion`,
+   `_scrollArea`, `_panelList`, `_regionArea`, `_footArea` и т. п.);
 3. регистрирует кнопку-переключатель в штатном list-слоте
    `sidebar.footer.action`;
 4. для смены ширины находит layout-store через
    `ctx.slots.entries("root")` и вызывает `actions.setSidebar(px)`.
+
+### Разметка DSH 0.2.2
+
+Начиная с 0.2.2 навигация и «Рабочие папки» — не прямые дети корня сайдбара,
+а содержимое общей обёртки прокрутки:
+
+```
+_root
+├─ _logoRow                     → колонка 1, строка 1
+├─ _newSession                  → колонка 2, строка 1
+├─ _scrollRegion                → обе колонки, строки 2–3
+│  ├─ _scrollArea               → двухколоночный грид
+│  │  ├─ _panelList             → колонка 1 (rail), своя прокрутка
+│  │  └─ _regionArea            → колонка 2, на всю высоту
+│  └─ _scrollFade               → скрыт
+└─ _footArea                    → колонка 1, строка 3
+```
+
+Высота rail-колонки навигации считается как `100% - var(--dsh-wsc-foot)`, где
+`--dsh-wsc-foot` — измеренная ResizeObserver'ом высота `_footArea` (настройки +
+переключатель + строка аккаунта). Подвал при этом лежит в третьей строке корня
+и приподнят по `z-index`: у растянутого `_scrollRegion` из-за `container-type`
+свой stacking context, и без этого кнопки подвала не получают клики.
 
 ## Ограничения
 
@@ -58,23 +82,43 @@ dsh plugin --profile desktop add link:C:\Users\galan\Projects\dsh-workspace-seco
   колонка здесь — визуальная, внутри существующего layout-трека; отдельного
   resize-хэндла у неё нет.
 - Ширина трека ограничена контрактом layout: 264–420 px.
-- Селекторы опираются на суффиксы CSS-module-классов. При мажорном обновлении
-  DSH имена могут измениться — тогда потребуется правка `lib/client.js`.
+- Селекторы опираются на суффиксы CSS-module-классов. При обновлении DSH имена
+  могут измениться — тогда потребуется правка `lib/client.js`.
 - Доступ к `layout-store` через `ctx.slots.entries("root")` — внутренний, хотя
-  и публично достижимый механизм; при изменении ui-layout плагин деградирует
-  до двух колонок без изменения ширины.
+  и публично достижимый механизм. В 0.2.2 store лежит на самом entry
+  (`entry.store`), в 0.2.1 — в `entry.options.store`; плагин читает оба места.
+  Если ui-layout перестанет отдавать store, плагин деградирует до двух колонок
+  без изменения ширины трека.
+- Плагин рассчитан на разметку DSH >= 0.2.2 (`dsh.engines.dsh`); на 0.2.1
+  селекторы обёртки прокрутки не совпадут.
 
 ## Разработка
 
+Локальный `node` из PATH может быть старее 22, поэтому скрипты удобнее гонять
+bundled-рантаймом DSH через `tools/node.ps1` (запускает `$env:DSH_NODE_EXECUTABLE`
+в режиме Node и корректно дожидается GUI-процесса):
+
 ```powershell
 # синтаксис
-node --check lib/index.js; node --check lib/client.js
+powershell -File tools/node.ps1 --check lib/client.js
 
 # shim-тесты клиентской половины (Node >= 22)
-node --test --test-isolation=none "test/*.test.mjs"
+powershell -File tools/node.ps1 --test --test-isolation=none "test/client-shim.test.mjs"
 
 # изолированный стенд DSH: второй экземпляр на своём DSH_HOME и порту
-node tools/harness.mjs --plugin dsh-workspace-second-column `
-  --plugin-spec link:<абсолютный путь к репозиторию> `
+powershell -File tools/node.ps1 tools/harness.mjs `
+  --plugin dsh-workspace-second-column --plugin-spec link:<путь к репозиторию> `
   --profile verify-second-column --port 52011
 ```
+
+Разбор установленного DSH (внутри `app.asar`) — `tools/asar.ps1`:
+
+```powershell
+powershell -File tools/asar.ps1 ls pkg:dsh-client-ui-sidebar
+powershell -File tools/asar.ps1 read pkg:dsh-client-ui-sidebar/src/client/SidebarRoot.tsx 400 40
+powershell -File tools/asar.ps1 grep 'data-sidebar-collapsed' pkg:dsh-client-ui-layout
+```
+
+Именно так сверяется актуальная разметка сайдбара после обновления DSH: классы
+`_root`, `_scrollRegion`, `_scrollArea`, `_panelList`, `_regionArea`, `_footArea`
+в `SidebarRoot.module.css` и структура `SidebarRoot.tsx`.

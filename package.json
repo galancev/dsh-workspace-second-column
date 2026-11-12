@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-second-column",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "DSH GUI plugin: two visual columns inside the left sidebar (icon rail + New Session/Workspaces) with collapsible navigation labels",
   "type": "module",
@@ -22,7 +22,7 @@
   "dsh": {
     "manifestVersion": 1,
     "engines": {
-      "dsh": ">=0.2.1-rc.3"
+      "dsh": ">=0.2.2-rc.2"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"

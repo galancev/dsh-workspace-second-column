@@ -2,10 +2,10 @@
  * Shim-тест клиентской половины: исполняет разданный клиентский бандл в
  * `node:vm` с минимальной браузерной обвязкой и проверяет, что `apply()`
  * ставит атрибуты режима, вставляет стили, регистрирует кнопку в
- * `sidebar.footer.action` и меняет ширину трека через layout-store.
+ * `sidebar.footer.action`, находит layout-store и меряет высоту подвала.
  *
- * Запуск: node --test --test-isolation=none "test/*.test.mjs"
- * (Node >= 22).
+ * Запуск (Node >= 22, например bundled runtime DSH):
+ *   node --test --test-isolation=none "test/*.test.mjs"
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -18,11 +18,12 @@ const STORAGE_KEY = "dsh.workspace-second-column.labels";
 
 /**
  * Создать минимальный DOM-стаб.
- * @param {object} [options] - `{ storedLabels, frame }`.
+ * @param {object} [options] - `{ storedLabels, frame, footHeight }`.
  * @returns {object} DOM и наблюдаемые коллекции.
  */
 function createDom(options = {}) {
   const attributes = new Map();
+  const properties = new Map();
   const documentElement = {
     setAttribute(name, value) {
       attributes.set(name, String(value));
@@ -32,6 +33,17 @@ function createDom(options = {}) {
     },
     hasAttribute(name) {
       return attributes.has(name);
+    },
+    style: {
+      setProperty(name, value) {
+        properties.set(name, String(value));
+      },
+      getPropertyValue(name) {
+        return properties.get(name) ?? "";
+      },
+      removeProperty(name) {
+        properties.delete(name);
+      },
     },
   };
   const element = (tagName) => ({
@@ -59,10 +71,15 @@ function createDom(options = {}) {
     closest() {
       return null;
     },
+    getBoundingClientRect() {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    },
   });
   const head = element("head");
   const frame = element("div");
   frame.hasAttribute = () => false;
+  const foot = element("div");
+  foot.getBoundingClientRect = () => ({ x: 0, y: 0, width: 56, height: options.footHeight ?? 0 });
   const document = {
     documentElement,
     head,
@@ -70,13 +87,14 @@ function createDom(options = {}) {
     createElement: element,
     querySelector(selector) {
       if (selector.includes("_frame")) return frame;
+      if (selector.includes("_footArea")) return options.footHeight === undefined ? null : foot;
       return null;
     },
     querySelectorAll() {
       return [];
     },
   };
-  return { document, head, attributes, storedLabels: options.storedLabels };
+  return { document, head, attributes, properties, storedLabels: options.storedLabels };
 }
 
 /**
@@ -108,6 +126,16 @@ function loadClient(dom) {
     },
     MutationObserver: class {
       observe() {}
+      disconnect() {}
+    },
+    ResizeObserver: class {
+      constructor(callback) {
+        this.callback = callback;
+      }
+      observe() {
+        // Немедленный вызов имитирует первичное измерение после монтирования.
+        this.callback();
+      }
       disconnect() {}
     },
     requestAnimationFrame() {
@@ -164,6 +192,22 @@ function createCtx(options = {}) {
   return ctx;
 }
 
+/** Фабрика layout-store с записью вызовов setSidebar. */
+function layoutStore(calls, sidebar) {
+  return {
+    create() {
+      return {
+        getSnapshot: () => ({ layoutInfo: { sidebar } }),
+        actions: {
+          setSidebar(px) {
+            calls.push(px);
+          },
+        },
+      };
+    },
+  };
+}
+
 test("apply ставит атрибуты режима и вставляет стили", () => {
   const dom = createDom();
   const client = loadClient(dom);
@@ -180,6 +224,22 @@ test("apply ставит атрибуты режима и вставляет с�
   assert.equal(registered[0].locale, "workspaceSecondColumn");
 });
 
+test("CSS описывает разметку DSH 0.2.2 (обёртка прокрутки)", () => {
+  const dom = createDom();
+  const client = loadClient(dom);
+  client.apply(createCtx());
+  const css = dom.head.children[0].textContent;
+  // Корень раскладывается в грид, а навигация и «Рабочие папки» живут внутри
+  // _scrollRegion > _scrollArea и позиционируются уже там.
+  assert.match(css, /grid-template-columns: var\(--dsh-wsc-rail\) minmax\(0, 1fr\)/);
+  assert.match(css, /\[class\*="_scrollRegion"\]/);
+  assert.match(css, /\[class\*="_scrollArea"\]/);
+  assert.match(css, /\[class\*="_panelEntry"\]/);
+  assert.match(css, /\[class\*="_footArea"\]/);
+  // Подвал должен перекрывать растянутый scrollRegion, иначе он не кликается.
+  assert.match(css, /\[class\*="_footArea"\] \{[^}]*z-index: 1/);
+});
+
 test("сохранённый expanded применяется при монтировании", () => {
   const dom = createDom({ storedLabels: "expanded" });
   const client = loadClient(dom);
@@ -191,24 +251,21 @@ test("ширина трека берётся из layout-store при развё
   const dom = createDom({ storedLabels: "expanded" });
   const client = loadClient(dom);
   const calls = [];
-  const entries = [
-    {
-      options: {
-        store: {
-          create() {
-            return {
-              getSnapshot: () => ({ layoutInfo: { sidebar: 280 } }),
-              actions: {
-                setSidebar(px) {
-                  calls.push(px);
-                },
-              },
-            };
-          },
-        },
-      },
-    },
-  ];
-  client.apply(createCtx({ entries }));
+  client.apply(createCtx({ entries: [{ options: { store: layoutStore(calls, 280) } }] }));
   assert.deepEqual(calls, [420]);
+});
+
+test("store читается с entry (DSH 0.2.2), а не только из options", () => {
+  const dom = createDom({ storedLabels: "expanded" });
+  const client = loadClient(dom);
+  const calls = [];
+  client.apply(createCtx({ entries: [{ options: {}, store: layoutStore(calls, 280) }] }));
+  assert.deepEqual(calls, [420]);
+});
+
+test("высота подвала попадает в --dsh-wsc-foot", () => {
+  const dom = createDom({ footHeight: 68 });
+  const client = loadClient(dom);
+  client.apply(createCtx());
+  assert.equal(dom.properties.get("--dsh-wsc-foot"), "68px");
 });
