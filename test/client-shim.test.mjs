@@ -15,15 +15,19 @@ import vm from "node:vm";
 const CLIENT_PATH = new URL("../lib/client.js", import.meta.url);
 const SOURCE = readFileSync(CLIENT_PATH, "utf8");
 const STORAGE_KEY = "dsh.workspace-second-column.labels";
+const TRACK_KEY = "dsh.workspace-second-column.track";
 
 /**
  * Создать минимальный DOM-стаб.
- * @param {object} [options] - `{ storedLabels, frame, footHeight }`.
- * @returns {object} DOM и наблюдаемые коллекции.
+ * @param {object} [options] - `{ storedLabels, storedTrack, footHeight }`.
+ * @returns {object} DOM, localStorage и наблюдаемые коллекции.
  */
 function createDom(options = {}) {
   const attributes = new Map();
   const properties = new Map();
+  const storage = new Map();
+  if (options.storedLabels !== undefined) storage.set(STORAGE_KEY, options.storedLabels);
+  if (options.storedTrack !== undefined) storage.set(TRACK_KEY, options.storedTrack);
   const documentElement = {
     setAttribute(name, value) {
       attributes.set(name, String(value));
@@ -76,8 +80,11 @@ function createDom(options = {}) {
     },
   });
   const head = element("head");
+  const frameAttributes = new Map();
   const frame = element("div");
-  frame.hasAttribute = () => false;
+  frame.hasAttribute = (name) => frameAttributes.has(name);
+  frame.setAttribute = (name, value) => frameAttributes.set(name, String(value));
+  frame.removeAttribute = (name) => frameAttributes.delete(name);
   const foot = element("div");
   foot.getBoundingClientRect = () => ({ x: 0, y: 0, width: 56, height: options.footHeight ?? 0 });
   const document = {
@@ -94,7 +101,7 @@ function createDom(options = {}) {
       return [];
     },
   };
-  return { document, head, attributes, properties, storedLabels: options.storedLabels };
+  return { document, head, attributes, properties, frameAttributes, storage };
 }
 
 /**
@@ -111,17 +118,15 @@ function loadClient(dom) {
       },
     },
   };
-  const store = new Map();
-  if (dom.storedLabels !== undefined) store.set(STORAGE_KEY, dom.storedLabels);
   const sandbox = {
     window,
     document: dom.document,
     localStorage: {
       getItem(key) {
-        return store.get(key) ?? null;
+        return dom.storage.get(key) ?? null;
       },
       setItem(key, value) {
-        store.set(key, String(value));
+        dom.storage.set(key, String(value));
       },
     },
     MutationObserver: class {
@@ -143,6 +148,8 @@ function loadClient(dom) {
       return 1;
     },
     cancelAnimationFrame() {},
+    setTimeout,
+    clearTimeout,
     console,
   };
   sandbox.globalThis = sandbox;
@@ -192,18 +199,40 @@ function createCtx(options = {}) {
   return ctx;
 }
 
-/** Фабрика layout-store с записью вызовов setSidebar. */
-function layoutStore(calls, sidebar) {
+/**
+ * Фабрика layout-store: записывает setSidebar, поддерживает subscribe и
+ * позволяет имитировать перетаскивание разделителя (`setSidebar` + data-dragging).
+ * @param {number[]} calls - журнал вызовов actions.setSidebar.
+ * @param {number} initialSidebar - стартовая ширина трека.
+ * @returns {object} store-дескриптор с `instance`, `sidebar` и `setSidebar`.
+ */
+function layoutStore(calls, initialSidebar) {
+  let sidebar = initialSidebar;
+  const listeners = new Set();
+  const instance = {
+    getSnapshot: () => ({ layoutInfo: { sidebar } }),
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    actions: {
+      setSidebar(px) {
+        calls.push(px);
+        sidebar = px;
+        for (const listener of listeners) listener();
+      },
+    },
+  };
   return {
-    create() {
-      return {
-        getSnapshot: () => ({ layoutInfo: { sidebar } }),
-        actions: {
-          setSidebar(px) {
-            calls.push(px);
-          },
-        },
-      };
+    create: () => instance,
+    instance,
+    /** Изменение ширины «извне»: как drag разделителя или сброс layout'а. */
+    setSidebar(px) {
+      sidebar = px;
+      for (const listener of listeners) listener();
+    },
+    get sidebar() {
+      return sidebar;
     },
   };
 }
@@ -268,4 +297,71 @@ test("высота подвала попадает в --dsh-wsc-foot", () => {
   const client = loadClient(dom);
   client.apply(createCtx());
   assert.equal(dom.properties.get("--dsh-wsc-foot"), "68px");
+});
+
+test("без drag'а сворачивание подписей возвращает штатные 280", () => {
+  const dom = createDom();
+  const client = loadClient(dom);
+  const registered = [];
+  const calls = [];
+  const store = layoutStore(calls, 280);
+  client.apply(createCtx({ registered, entries: [{ store }] }));
+
+  registered[0].inject().toggleLabels();
+  assert.equal(store.sidebar, 420);
+  registered[0].inject().toggleLabels();
+  assert.equal(store.sidebar, 280);
+  assert.deepEqual(calls, [420, 280]);
+});
+
+test("ширина, выбранная drag'ом, восстанавливается после сворачивания подписей", async () => {
+  const dom = createDom();
+  const client = loadClient(dom);
+  const registered = [];
+  const calls = [];
+  const store = layoutStore(calls, 280);
+  client.apply(createCtx({ registered, entries: [{ store }] }));
+
+  // 1. Пользователь растянул трек до максимума, пока подписи свёрнуты.
+  dom.frameAttributes.set("data-dragging", "");
+  store.setSidebar(420);
+  dom.frameAttributes.delete("data-dragging");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(dom.storage.get(TRACK_KEY), "420");
+
+  // 2. Развернул подписи: трек уже максимальный, rail забирает место у колонки.
+  registered[0].inject().toggleLabels();
+  assert.equal(dom.attributes.get("data-dsh-wsc-labels"), "expanded");
+  assert.equal(store.sidebar, 420);
+
+  // 3. Свернул: трек остаётся таким, каким его оставил пользователь.
+  registered[0].inject().toggleLabels();
+  assert.equal(dom.attributes.get("data-dsh-wsc-labels"), "collapsed");
+  assert.equal(store.sidebar, 420);
+  assert.ok(!calls.includes(280), "сворачивание не должно сбрасывать ширину к 280");
+});
+
+test("сохранённая ширина применяется при монтировании", () => {
+  const dom = createDom({ storedTrack: "400" });
+  const client = loadClient(dom);
+  const calls = [];
+  client.apply(createCtx({ entries: [{ store: layoutStore(calls, 280) }] }));
+  assert.deepEqual(calls, [400]);
+});
+
+test("ширина вне drag'а (штатный сброс layout'а) не запоминается", async () => {
+  const dom = createDom();
+  const client = loadClient(dom);
+  const registered = [];
+  const calls = [];
+  const store = layoutStore(calls, 280);
+  client.apply(createCtx({ registered, entries: [{ store }] }));
+
+  store.setSidebar(300);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(dom.storage.get(TRACK_KEY), undefined);
+
+  registered[0].inject().toggleLabels();
+  registered[0].inject().toggleLabels();
+  assert.equal(store.sidebar, 280);
 });

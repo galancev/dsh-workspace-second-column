@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-second-column",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "DSH GUI plugin: two visual columns inside the left sidebar (icon rail + New Session/Workspaces) with collapsible navigation labels",
   "type": "module",
